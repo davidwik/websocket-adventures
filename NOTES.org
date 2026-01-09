@@ -1,0 +1,155 @@
+#+TITLE: Designing websocket servers
+
+* ID's
+Snowflake is an 64bit binary based on timestamps. This makes it very unique across servers. This is passed along which server ID (worker_id) the users is on.
+
+This also has the benefit of storing the time the user signed on.
+
+Example of a snowflake generator:
+
+#+BEGIN_SRC python
+import time
+
+# --- Constants ---
+TIMESTAMP_BITS = 41
+WORKER_BITS = 10
+SEQUENCE_BITS = 12
+
+MAX_WORKER_ID = (1 << WORKER_BITS) - 1  # 1023
+MAX_SEQUENCE = (1 << SEQUENCE_BITS) - 1  # 4095
+
+WORKER_SHIFT = SEQUENCE_BITS  # 12
+TIMESTAMP_SHIFT = SEQUENCE_BITS + WORKER_BITS  # 22
+
+# Default custom epoch (ms since UNIX epoch)
+DEFAULT_EPOCH = 1700000000000
+
+
+# --- Snowflake class ---
+class Snowflake:
+    __slots__ = ("worker_id", "last_ts", "sequence", "epoch")
+
+    def __init__(self, worker_id: int, epoch: int = DEFAULT_EPOCH):
+        if not (0 <= worker_id <= MAX_WORKER_ID):
+            raise ValueError(f"worker_id must be 0-{MAX_WORKER_ID}")
+        self.worker_id = worker_id
+        self.last_ts = -1
+        self.sequence = 0
+        self.epoch = epoch
+
+    # Generate next Snowflake ID
+    def next_id(self) -> int:
+        ts = time.time_ns() // 1_000_000  # current timestamp in ms
+
+        if ts == self.last_ts:
+            self.sequence += 1
+            if self.sequence > MAX_SEQUENCE:
+                # Busy-wait until next millisecond
+                while ts <= self.last_ts:
+                    ts = time.time_ns() // 1_000_000
+                self.sequence = 0
+        else:
+            self.sequence = 0
+
+        self.last_ts = ts
+
+        # Compose Snowflake ID
+        return (
+            ((ts - self.epoch) << TIMESTAMP_SHIFT)
+            | (self.worker_id << WORKER_SHIFT)
+            | self.sequence
+        )
+
+    # Decode a Snowflake ID into its components
+    def decode(self, snowflake_id: int):
+        ts = (
+            (snowflake_id >> TIMESTAMP_SHIFT) & ((1 << TIMESTAMP_BITS) - 1)
+        ) + self.epoch
+        worker = (snowflake_id >> WORKER_SHIFT) & MAX_WORKER_ID
+        seq = snowflake_id & MAX_SEQUENCE
+        return ts, worker, seq
+
+    # Extract just worker ID
+    @staticmethod
+    def worker_id_from(snowflake_id: int) -> int:
+        return (snowflake_id >> WORKER_SHIFT) & MAX_WORKER_ID
+
+    # Extract just sequence number
+    @staticmethod
+    def sequence_from(snowflake_id: int) -> int:
+        return snowflake_id & MAX_SEQUENCE
+
+    # Extract just timestamp (ms)
+    @staticmethod
+    def timestamp_from(snowflake_id: int, epoch: int = DEFAULT_EPOCH) -> int:
+        return ((snowflake_id >> TIMESTAMP_SHIFT) & ((1 << TIMESTAMP_BITS) - 1)) + epoch
+
+
+#+END_SRC
+* Message format
+Usually JSON would be the first to come to mind in order to send data across for easy parsing, however it would put to much pressure on the CPU to encode and decode json data.
+
+Using struct is one possibility, however it's harder to manage and not very good with dynamic data.
+
+MessagePack is much more lightweight than json and you get similar functionality.
+
+* Use dicts!
+When handling lists in a server it's better to use them as dict where the key is the user id.
+
+Such as:
+#+BEGIN_SRC python
+
+  id = 9822
+  id_name: dict[int, string] = {id: "David" }
+  id_socket: dict[int, socket] = {id: davids_socket}
+  id_lastseen: dict[int, int] = {id: timestamp}
+
+
+#+END_SRC
+
+So the ID will always be the lookup in the dictionary.
+* Storing nicknames
+If it's a single instance you could use a set containing the names, and carefully clean it up when a user disconnects. 1023
+
+However in a distributed system it would be more benefitual to use redis.
+
+* Setup of a system
+
+
+#+BEGIN_SRC shell
+
+
+          ┌───────────────┐
+          │   Browser     │
+          │ (HTTPS page)  │
+          │ wss://chat.example.com/ws │
+          └───────┬───────┘
+                  │ TLS (wss)
+                  ▼
+           ┌───────────────┐
+           │   Nginx / LB  │
+           │ TLS Termination│
+           └───────┬───────┘
+                   │ Upgrade to WebSocket
+         ┌─────────┴─────────┐
+         │                   │
+ ┌──────────────┐     ┌──────────────┐
+ │ Worker 1     │     │ Worker 2     │
+ │ WebSocket    │     │ WebSocket    │
+ │ Server       │     │ Server       │
+ │ Handles 5k   │     │ Handles 5k   │
+ │ users        │     │ users        │
+ └──────┬───────┘     └──────┬───────┘
+        │ Redis Pub/Sub       │ Redis Pub/Sub
+        │                     │
+        └────────────┬────────┘
+                     ▼
+                  ┌───────────────┐
+                  │    Redis      │
+                  │ Global routing│
+                  │ active handles│
+                  │ Snowflake IDs │
+                  └───────────────┘
+
+
+#+END_SRC
