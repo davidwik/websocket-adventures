@@ -1,8 +1,11 @@
 import asyncio
 import websockets
-from multiuser import mk_pack
+from hserver import PackIDX, mk_pack, Command
+
+import msgpack
 import random
 
+CLIENTS = 2000
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
@@ -40,34 +43,71 @@ def get_name() -> str:
     return f"{random.choice(names)}_{num}"
 
 
-async def main(username: str = "donnie"):
+async def receive_data(websocket):
+    async for message in websocket:
+        response = msgpack.unpackb(message)
+        # print(response)
+
+
+async def simulate_chat():
     id = None
+    name = f"{random.choice(names)}_{random.randint(0, 100)}"
     async with websockets.connect(
         "ws://localhost:8765",
         ping_timeout=None,
         close_timeout=None,
-        additional_headers={"username": username},
+        additional_headers={"username": name},
     ) as websocket:
-        while id is None:
+        ## First get the id
+        try:
             id = await websocket.recv()
+            if not str(id).isnumeric():
+                print(id)
+                return None
+        except websockets.ConnectionClosedError:
+            print("Failed to connect to server.. maybe busy?")
+            return None
         id = int(id)
+
+        ## Join a channel
+        chan = random.randint(0, 10)
+        chan_id = None
+        msg = mk_pack(Command.JOIN_CHANNEL, id, name, "", chan)
+        await websocket.send(msg)
+
+        try:
+            chan_id = await websocket.recv()
+        except websockets.ConnectionClosedError:
+            print("Failed to register on channel..")
+            return None
+
+        if chan_id is None:
+            print("Failed to get chanid")
+
+        recv_task = asyncio.create_task(receive_data(websocket))
+
         while True:
-            await asyncio.sleep(random.randint(0, 10))
+            delay = random.randint(100, 500)
+            await asyncio.sleep(delay / 100)
+            txt = random.choice(strings)
+            msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, chan_id)
+            await websocket.send(msg)
 
-            message = random.choice(strings)
-
-            if message.lower() == "quit":
-                break
-            msg = Msg(id, username, message)
-
-            await websocket.send(msg.pack())
-            response = await websocket.recv()
-            res = Msg.unpack(response)
-            print(res.data)
+        recv_task.cancel()
         await websocket.close()
 
 
+async def main():
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tasks: list[asyncio.Task] = []
+            for _ in range(0, CLIENTS):
+                await asyncio.sleep(0.1)
+                tasks.append(tg.create_task(simulate_chat()))
+
+    except KeyboardInterrupt:
+        print("Shutting down...")
+
+
 if __name__ == "__main__":
-    breakpoint()
-    print("python client.py [USERNAME]")
     asyncio.run(main())

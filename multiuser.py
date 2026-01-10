@@ -1,4 +1,5 @@
 import asyncio
+from typing import BinaryIO
 
 from websockets import ConnectionClosed, serve
 from websockets.asyncio.server import ServerConnection
@@ -8,8 +9,10 @@ from time import time
 import msgpack
 
 
-def mk_pack(id: int, name: str, text: str, to: int = 0):
-    return msgpack.packb((id, name, text, to))
+def mk_pack(id: int, name: str, text: str, to: int = 0, ts=None) -> bytes:
+    if ts is None:
+        ts = time()
+    return msgpack.packb((id, name, text, ts, to))  # type: ignore
 
 
 class WebsocketServer:
@@ -26,16 +29,22 @@ class WebsocketServer:
         print(f"New client connected. Total clients {len(self.clients)}")
 
     async def unregister(self, id: int):
-        del self.clients[id]
-        print(f"Client disconnected. Total clients {len(self.clients)}")
+        if id in self.clients:
+            del self.clients[id]
+            del self.users[id]
+            print(f"Client disconnected. Total clients {len(self.clients)}")
 
-    async def send_message_to_all(self, message: bytes):
-        for client in self.clients.copy().items():
-            try:
-                await client[1].send(message)
-            except Exception as e:
-                await self.unregister(client[0])
-                print(f"Failed to send message to client {e}")
+    async def send_message_to_all(self, id, websocket, message: bytes):
+        tasks = []
+        for id, ws in list(self.clients.items()):
+            tasks.append(self._safe_send(id, websocket, message))
+        await asyncio.gather(*tasks)
+
+    async def _safe_send(self, id: int, websocket, message: bytes):
+        try:
+            await websocket.send(message)
+        except ConnectionClosed:
+            await self.unregister(id)
 
     async def handle_connection(self, websocket: ServerConnection):
         id = self.sf.next_id()
@@ -44,8 +53,9 @@ class WebsocketServer:
         try:
             async for message in websocket:
                 msg = msgpack.unpackb(message)
-                print(f"Received message: {msg.data}")
-                await self.send_message_to_all(mk_pack(msg[0], msg[1], msg[2], msg[3]))
+                print(msg)
+                msg = mk_pack(msg[0], msg[1], msg[2], msg[3], msg[4])
+                await self.send_message_to_all(id, websocket, msg)
 
         except ConnectionClosed:
             print("Client disconnected")
