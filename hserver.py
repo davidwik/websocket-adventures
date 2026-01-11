@@ -3,7 +3,7 @@ from enum import IntEnum
 import websockets
 from snow import Snowflake
 from time import time
-
+import sys
 import msgpack
 
 MAX_TOTAL_QUEUE = 100_000  # max total queued messages across all clients
@@ -197,6 +197,8 @@ class WebsocketServer:
 async def main():
     server = WebsocketServer()
 
+    port = sys.argv[1]
+
     async def handle_safe(ws):
         try:
             await server.handle_connection(ws)
@@ -205,7 +207,7 @@ async def main():
         except Exception as e:
             print(f"Unexpected error: {e}")
 
-    async with websockets.serve(server.handle_connection, "localhost", 8765):
+    async with websockets.serve(server.handle_connection, "localhost", int(port)):
         asyncio.create_task(server.stats_printer())
         print("Server started on ws://localhost:8765")
         await asyncio.Future()

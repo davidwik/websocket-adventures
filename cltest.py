@@ -1,11 +1,11 @@
 import asyncio
 import websockets
 from hserver import PackIDX, mk_pack, Command
-
+import sys
 import msgpack
 import random
 
-CLIENTS = 2000
+CLIENTS = 1500
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
@@ -20,6 +20,7 @@ strings = [
     "Klaras bästa kompis Sara är läbbig",
     "Jag har ett monster i min garderob",
     "Den som ens hade monster...",
+    "Ja jisses vilket liv...",
 ]
 
 
@@ -32,6 +33,11 @@ names = [
     "Julia",
     "Anna",
     "JohanPistol",
+    "GöranHäst",
+    "Nina",
+    "David",
+    "Sven",
+    "Torben",
 ]
 
 random.randint(0, 99)
@@ -52,8 +58,9 @@ async def receive_data(websocket):
 async def simulate_chat():
     id = None
     name = f"{random.choice(names)}_{random.randint(0, 100)}"
+    port = sys.argv[1]
     async with websockets.connect(
-        "ws://localhost:8765",
+        f"ws://localhost:{port}",
         ping_timeout=None,
         close_timeout=None,
         additional_headers={"username": name},
