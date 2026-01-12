@@ -13,12 +13,14 @@ import msgpack
 class ChatLikeApp(App):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.user_list: ListView
         self.nick_name: str = "David"
         self.snowflake_id: int
         self.channel_number: int = 1
         self.history: TextArea
         self.recv_task: asyncio.Task
         self.active = True
+        self.chan_list = {}
 
     CSS = """
     Screen {
@@ -43,15 +45,44 @@ class ChatLikeApp(App):
 
     async def receive_data(self, websocket):
         async for message in websocket:
-            msg = msgpack.unpackb(message)
-            if msg[PackIDX.COMMAND] == Command.CHAN_LIST_DATA:
-                await self.update_user_list(self, msg[PackIDX.CONTENT])
-            else:
-                msgstr = f"{msg[PackIDX.NAME]}: {msg[PackIDX.CONTENT]}\n"
-                self.history.insert(msgstr)
+            try:
+                msg = msgpack.unpackb(message, strict_map_key=False)
+                if msg[PackIDX.COMMAND] == Command.CHAN_LIST_DATA:
+                    _ = asyncio.create_task(
+                        self.update_user_list(
+                            msg[PackIDX.CHANNEL], msg[PackIDX.CONTENT]
+                        )
+                    )
+                else:
+                    msgstr = f"{msg[PackIDX.NAME]}: {msg[PackIDX.CONTENT]}\n"
+                    self.history.insert(f"{msgstr}")
 
-    async def update_user_list(self, user_list: dict[int, str]):
-        self.history.insert(str(user_list))
+            except Exception as e:
+                self.history.insert(f"Something unexpected {e}")
+
+    async def update_user_list(self, chan_id: int, new_list: dict[int, str]):
+        if chan_id in self.chan_list:
+            old_list = self.chan_list[chan_id]
+        else:
+            old_list = {}
+
+        diff = old_list.keys() ^ new_list.keys()
+
+        left: set[int] = old_list.keys() & diff
+        new: set[int] = diff - left
+
+        merge = old_list | new_list
+        add_users = {a: b for a, b in merge.items() if a in new}
+        remove_users = {a: b for a, b in merge.items() if a in left}
+        self.chan_list[chan_id] = new_list
+        await self.render_user_list(chan_id, add_users, remove_users)
+
+    async def render_user_list(
+        self, chan_id: int, add_users: dict[int, str], remove_users: dict[int, str]
+    ):
+        self.history.insert(f"add: {add_users}")
+        for id, name in add_users.items():
+            self.user_list.append(ListItem(Label(f"{name}"), id=f"user-{id}"))
 
     async def update_stuff(self, websocket):
         while self.active:
@@ -61,12 +92,13 @@ class ChatLikeApp(App):
                 self.nick_name,
                 "",
                 self.channel_number,
-                0,
+                self.snowflake_id,
             )
             await websocket.send(msg)
             await asyncio.sleep(10)
 
     async def start_safe(self):
+        self.active = True
         try:
             await self.start_chat()
         except OSError:
@@ -75,12 +107,8 @@ class ChatLikeApp(App):
             self.history.insert("Unknown exception\n")
 
     async def start_chat(self):
-        self.active = True
-
         async with websockets.connect(
             f"ws://localhost:8765?username={quote(self.nick_name)}",
-            ping_timeout=None,
-            close_timeout=None,
         ) as websocket:
             try:
                 id = await websocket.recv()
@@ -113,8 +141,8 @@ class ChatLikeApp(App):
             if chan_id is None:
                 self.history.insert("Failed to get chanid\n")
 
-            self.update_stuff_task = asyncio.create_task(self.update_stuff(websocket))
             self.recv_task = asyncio.create_task(self.receive_data(websocket))
+            self.update_stuff_task = asyncio.create_task(self.update_stuff(websocket))
 
             self.notify("You are now connected!")
             self.history.insert(
@@ -124,7 +152,6 @@ class ChatLikeApp(App):
                 await asyncio.sleep(0.2)
 
             self.recv_task.cancel()
-
             await websocket.close()
 
     def compose(self) -> ComposeResult:
@@ -140,10 +167,7 @@ class ChatLikeApp(App):
     def on_mount(self) -> None:
         self.query_one("#entry", Input).focus()
         self.history = self.query_one("#history", TextArea)
-        self.userList: ListView = self.query_one("#user-list", ListView)
-
-        for a in range(0, 100):
-            self.userList.append(ListItem(Label("asdf")))
+        self.user_list: ListView = self.query_one("#user-list", ListView)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -183,6 +207,17 @@ class ChatLikeApp(App):
                 self.history.insert(f"{text}\n")
 
         event.input.value = ""  # Clear input
+
+    def _find_insert_index(self, list_view: ListView, name: str) -> int:
+        name_key = name.casefold()
+
+        for index, item in enumerate(list_view.children):
+            label = item.query_one(Label)
+            existing_name = str(label).casefold()
+
+            if existing_name > name_key:
+                return index
+        return len(list_view.children)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import sys
 import msgpack
 import random
 
-CLIENTS = 50
+CLIENTS = 500
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
@@ -20,6 +20,8 @@ strings = [
     "Se där! En sax!",
     "Klaras bästa kompis Sara är läbbig",
     "Jag har ett monster i min garderob",
+    "I love Pusheen!!",
+    "World bank from China!",
     "Den som ens hade monster...",
     "Ja jisses vilket liv...",
 ]
@@ -39,6 +41,8 @@ names = [
     "David",
     "Sven",
     "Torben",
+    "Oskar Holiday",
+    "Alice Viktorsson",
 ]
 
 random.randint(0, 99)
@@ -52,7 +56,7 @@ def get_name() -> str:
 
 async def receive_data(websocket):
     async for message in websocket:
-        response = msgpack.unpackb(message)
+        response = msgpack.unpackb(message, strict_map_key=False)
         # print(response)
 
 
@@ -95,7 +99,7 @@ async def simulate_chat():
         recv_task = asyncio.create_task(receive_data(websocket))
 
         while True:
-            delay = random.randint(100, 500)
+            delay = random.randint(500, 3000)
             await asyncio.sleep(delay / 100)
             txt = random.choice(strings)
             msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, chan_id)

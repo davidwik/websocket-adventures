@@ -130,10 +130,10 @@ class WebsocketServer:
         id = msg[PackIDX.ID]
         session: ClientSession = self.clients[id]
         chan_id = msg[PackIDX.CHANNEL]
-        content = self.channels[chan_id]
+        content = self.channels[chan_id].copy()
         new_msg = mk_pack(command, id, msg[PackIDX.NAME], content, chan_id, to=id)
-
-        await session.queue.put(msg)
+        print("REQ for channel list")
+        await session.queue.put(new_msg)
 
     async def write_to_channel(self, msg: tuple):
         chan = int(msg[PackIDX.CHANNEL])
