@@ -6,7 +6,9 @@ from time import time
 import sys
 import msgpack
 
-MAX_TOTAL_QUEUE = 100_000  # max total queued messages across all clients
+from urllib.parse import parse_qs, urlparse
+
+MAX_TOTAL_QUEUE = 100000  # max total queued messages across all clients
 MAX_QUEUE_PER_CLIENT = 500  # per-client queue size
 
 
@@ -16,7 +18,7 @@ class Command(IntEnum):
     WRITE_TO_CHANNEL = 3
     WRITE_TO_USER = 4
     GET_CHAN_LIST = 5
-    BROADCAST = 6
+    CHAN_LIST_DATA = 6
 
 
 class PackIDX(IntEnum):
@@ -33,7 +35,7 @@ def mk_pack(
     command: Command,
     id: int,
     name: str,
-    content: str | dict[int, str],
+    content: str | dict[int, str] | list[tuple],
     chan: int = 0,
     to: int = 0,
     ts: float | None = None,
@@ -51,6 +53,7 @@ class ClientSession:
         self.queue = asyncio.Queue(maxsize=MAX_QUEUE_PER_CLIENT)
         self.writer_task = asyncio.create_task(self.writer())
         self.closed = False
+        self.channels: set[int] = set()
 
     async def writer(self):
         try:
@@ -108,6 +111,7 @@ class WebsocketServer:
 
     async def unregister(self, id):
         session = self.clients.pop(id)
+        _ = [self.channels[a].pop(id) for a in session.channels]
         if session:
             session.writer_task.cancel()
             try:
@@ -116,10 +120,20 @@ class WebsocketServer:
                 pass
 
     async def register_on_channel(self, ws, id: int, chan_id: int, name: str):
-        self.channels[chan_id][id] = name
-        session = self.clients[id]
-
+        self.channels[chan_id][id] = str(name)
+        session: ClientSession = self.clients[id]
+        session.channels.add(chan_id)
         await session.queue.put(str(chan_id))
+
+    async def send_chan_list(self, ws, msg):
+        command = Command.CHAN_LIST_DATA
+        id = msg[PackIDX.ID]
+        session: ClientSession = self.clients[id]
+        chan_id = msg[PackIDX.CHANNEL]
+        content = self.channels[chan_id]
+        new_msg = mk_pack(command, id, msg[PackIDX.NAME], content, chan_id, to=id)
+
+        await session.queue.put(msg)
 
     async def write_to_channel(self, msg: tuple):
         chan = int(msg[PackIDX.CHANNEL])
@@ -168,8 +182,9 @@ class WebsocketServer:
 
     async def handle_connection(self, ws):
         # Check if the server status is not OVERLOADED
+        query = urlparse(ws.request.path).query
+        name = parse_qs(query)["username"][0]
 
-        name = ws.request.headers["username"]
         id = await self.register(ws, name)
         if id is None:
             return
@@ -185,6 +200,9 @@ class WebsocketServer:
                     case Command.WRITE_TO_CHANNEL:
                         chan_id = msg[PackIDX.CHANNEL]
                         await self.write_to_channel(msg)
+                        continue
+                    case Command.GET_CHAN_LIST:
+                        await self.send_chan_list(ws, msg)
                         continue
                     case _:
                         print(f"Well this is awkward{msg}")

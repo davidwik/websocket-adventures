@@ -1,11 +1,12 @@
 import asyncio
 import websockets
 from hserver import PackIDX, mk_pack, Command
+from urllib.parse import quote
 import sys
 import msgpack
 import random
 
-CLIENTS = 1500
+CLIENTS = 50
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
@@ -59,11 +60,11 @@ async def simulate_chat():
     id = None
     name = f"{random.choice(names)}_{random.randint(0, 100)}"
     port = sys.argv[1]
+
     async with websockets.connect(
-        f"ws://localhost:{port}",
+        f"ws://localhost:{port}?username={quote(name)}",
         ping_timeout=None,
         close_timeout=None,
-        additional_headers={"username": name},
     ) as websocket:
         ## First get the id
         try:
