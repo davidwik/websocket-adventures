@@ -1,3 +1,4 @@
+from turtle import title
 from textual.app import App, ComposeResult
 from textual.widgets import TextArea, Input, ListView, ListItem, Label, Footer
 from textual.containers import Vertical, Horizontal
@@ -29,7 +30,7 @@ class ChatLikeApp(App):
 
     ListView {
         border: solid red;
-        width: 20;
+        width: 30;
     }
 
     TextArea {
@@ -80,9 +81,16 @@ class ChatLikeApp(App):
     async def render_user_list(
         self, chan_id: int, add_users: dict[int, str], remove_users: dict[int, str]
     ):
-        self.history.insert(f"add: {add_users}")
+        def get_key(item: ListItem):
+            self.history.insert(str(item.query_one(Label).content))
+            return str(item.query_one(Label).children)
+
         for id, name in add_users.items():
             self.user_list.append(ListItem(Label(f"{name}"), id=f"user-{id}"))
+
+        self.user_list.sort_children(
+            key=lambda item: str(item.query_one(Label).content).casefold()
+        )
 
     async def update_stuff(self, websocket):
         while self.active:
@@ -145,6 +153,8 @@ class ChatLikeApp(App):
             self.update_stuff_task = asyncio.create_task(self.update_stuff(websocket))
 
             self.notify("You are now connected!")
+            self.user_list.clear()
+            self.chan_list = {}
             self.history.insert(
                 f"Connected as [{self.nick_name}] on channel: #{self.channel_number}\n"
             )
@@ -167,7 +177,7 @@ class ChatLikeApp(App):
     def on_mount(self) -> None:
         self.query_one("#entry", Input).focus()
         self.history = self.query_one("#history", TextArea)
-        self.user_list: ListView = self.query_one("#user-list", ListView)
+        self.user_list = self.query_one("#user-list", ListView)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
