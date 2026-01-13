@@ -6,7 +6,7 @@ import sys
 import msgpack
 import random
 
-CLIENTS = 500
+CLIENTS = 100
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
@@ -98,13 +98,16 @@ async def simulate_chat():
 
         recv_task = asyncio.create_task(receive_data(websocket))
 
-        while True:
+        keep_chatting = True
+
+        while keep_chatting:
             delay = random.randint(500, 3000)
             await asyncio.sleep(delay / 100)
             txt = random.choice(strings)
             msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, chan_id)
             await websocket.send(msg)
-
+            if random.randint(0, 100) == 67:
+                keep_chatting = False
         recv_task.cancel()
         await websocket.close()
 

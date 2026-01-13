@@ -81,9 +81,16 @@ class ChatLikeApp(App):
     async def render_user_list(
         self, chan_id: int, add_users: dict[int, str], remove_users: dict[int, str]
     ):
+        for a in remove_users.keys():
+            try:
+                item = self.user_list.query_one(f"#user-{a}", ListItem)
+                item.remove()
+            except Exception:
+                pass
+
         def get_key(item: ListItem):
             self.history.insert(str(item.query_one(Label).content))
-            return str(item.query_one(Label).children)
+            return str(item.query_one(Label).content)
 
         for id, name in add_users.items():
             self.user_list.append(ListItem(Label(f"{name}"), id=f"user-{id}"))
