@@ -1,14 +1,34 @@
 from turtle import title
+from textual import on
+from textual.events import Key
 from textual.app import App, ComposeResult
 from textual.widgets import TextArea, Input, ListView, ListItem, Label, Footer
 from textual.containers import Vertical, Horizontal
 from hserver import PackIDX, mk_pack, Command
 from urllib.parse import quote
 from time import sleep
+from collections import deque
 import asyncio
 import websockets
 import sys
 import msgpack
+
+
+class Buffer:
+    MAX_MESSAGES = 300
+
+    channel_buffers: dict[int, deque] = {}
+    dm_buffers: dict[int, deque] = {}
+
+    @staticmethod
+    def get_channel_buffer(chan_id: int) -> deque:
+        return Buffer.channel_buffers.setdefault(
+            chan_id, deque(maxlen=Buffer.MAX_MESSAGES)
+        )
+
+    @staticmethod
+    def get_dm_buffer(user_id: int) -> deque:
+        return Buffer.dm_buffers.setdefault(user_id, deque(maxlen=Buffer.MAX_MESSAGES))
 
 
 class ChatLikeApp(App):
@@ -22,6 +42,13 @@ class ChatLikeApp(App):
         self.recv_task: asyncio.Task
         self.active = True
         self.chan_list = {}
+        self.chan_buf: dict[int, asyncio.Queue] = {}
+        self.dm_buf: dict[int, asyncio.Queue] = {}
+
+    def get_chan_buf(self, chan_id: int) -> asyncio.Queue:
+        if chan_id not in self.chan_buf:
+            self.chan_buf[chan_id] = asyncio.Queue()
+        return self.chan_buf[chan_id]
 
     CSS = """
     Screen {
@@ -48,15 +75,18 @@ class ChatLikeApp(App):
         async for message in websocket:
             try:
                 msg = msgpack.unpackb(message, strict_map_key=False)
-                if msg[PackIDX.COMMAND] == Command.CHAN_LIST_DATA:
-                    _ = asyncio.create_task(
-                        self.update_user_list(
-                            msg[PackIDX.CHANNEL], msg[PackIDX.CONTENT]
+                match msg[PackIDX.COMMAND]:
+                    case Command.CHAN_LIST_DATA:
+                        _ = asyncio.create_task(
+                            self.update_user_list(
+                                msg[PackIDX.CHANNEL], msg[PackIDX.CONTENT]
+                            )
                         )
-                    )
-                else:
-                    msgstr = f"{msg[PackIDX.NAME]}: {msg[PackIDX.CONTENT]}\n"
-                    self.history.insert(f"{msgstr}")
+                    case Command.WRITE_TO_CHANNEL:
+                        buf = self.get_chan_buf(msg[PackIDX.CHANNEL])
+                        await buf.put(msg)
+                        await asyncio.sleep(0.1)
+                        continue
 
             except Exception as e:
                 self.history.insert(f"Something unexpected {e}")
@@ -121,6 +151,18 @@ class ChatLikeApp(App):
         except Exception:
             self.history.insert("Unknown exception\n")
 
+    async def print_channel(self, chan_id: int):
+        last_len = 0
+        self.history.insert(f"{chan_id}")
+        self.history.insert("JOJO")
+        while True:
+            await asyncio.sleep(1)
+            self.history.insert("WAITING FOR BUF\n")
+            buf = self.get_chan_buf(chan_id)
+            msg = await buf.get()
+            self.history.insert("BUF DONE\n")
+            self.history.insert(f"{msg}")
+
     async def start_chat(self):
         async with websockets.connect(
             f"ws://localhost:8765?username={quote(self.nick_name)}",
@@ -158,6 +200,9 @@ class ChatLikeApp(App):
 
             self.recv_task = asyncio.create_task(self.receive_data(websocket))
             self.update_stuff_task = asyncio.create_task(self.update_stuff(websocket))
+            self.write_task = asyncio.create_task(
+                self.print_channel(self.channel_number)
+            )
 
             self.notify("You are now connected!")
             self.user_list.clear()
@@ -180,6 +225,10 @@ class ChatLikeApp(App):
                 Input(id="entry", placeholder="Type here and press Enter..."),
             ),
         )
+
+    @on(ListView.Selected)
+    def user_selected(self, event: ListView.Selected):
+        self.history.insert(str(event.__dict__))
 
     def on_mount(self) -> None:
         self.query_one("#entry", Input).focus()

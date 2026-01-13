@@ -6,7 +6,7 @@ import sys
 import msgpack
 import random
 
-CLIENTS = 100
+CLIENTS = 50
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
