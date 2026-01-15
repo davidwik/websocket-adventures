@@ -1,12 +1,12 @@
 import asyncio
 import websockets
-from hserver import PackIDX, mk_pack, Command
+from server import PackIDX, mk_pack, Command
 from urllib.parse import quote
 import sys
 import msgpack
 import random
 
-CLIENTS = 50
+CLIENTS = 100
 
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
@@ -107,7 +107,7 @@ async def simulate_chat():
             msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, chan_id)
             await websocket.send(msg)
             if random.randint(0, 100) == 67:
-                keep_chatting = False
+                keep_chatting = True  # Switch to False for decline of users
         recv_task.cancel()
         await websocket.close()
 
