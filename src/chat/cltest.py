@@ -1,6 +1,7 @@
 import asyncio
 import websockets
-from server import PackIDX, mk_pack, Command
+from chat.protocoltypes import PackIDX, Command
+from chat.utils import mk_pack
 from urllib.parse import quote
 import sys
 import msgpack
@@ -62,6 +63,7 @@ async def receive_data(websocket):
 
 async def simulate_chat():
     id = None
+    chan_id = None
     name = f"{random.choice(names)}_{random.randint(0, 100)}"
     port = sys.argv[1]
 
@@ -74,7 +76,6 @@ async def simulate_chat():
         try:
             id = await websocket.recv()
             if not str(id).isnumeric():
-                print(id)
                 return None
         except websockets.ConnectionClosedError:
             print("Failed to connect to server.. maybe busy?")
@@ -88,7 +89,10 @@ async def simulate_chat():
         await websocket.send(msg)
 
         try:
-            chan_id = await websocket.recv()
+            msg = await websocket.recv()
+            msg = msgpack.unpackb(msg, strict_map_key=False)
+            if msg[PackIDX.COMMAND] == Command.JOIN_CHANNEL_RESP:
+                chan_id = msg[PackIDX.CHANNEL]
         except websockets.ConnectionClosedError:
             print("Failed to register on channel..")
             return None
@@ -103,16 +107,22 @@ async def simulate_chat():
         while keep_chatting:
             delay = random.randint(500, 3000)
             await asyncio.sleep(delay / 100)
+            if chan_id is None:
+                continue
             txt = random.choice(strings)
-            msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, chan_id)
+            msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, int(chan_id))
             await websocket.send(msg)
-            if random.randint(0, 100) == 67:
-                keep_chatting = True  # Switch to False for decline of users
+            if random.randint(0, 10) == 5:
+                msg = mk_pack(
+                    Command.LEAVE_CHANNEL, id, name, "leaving", int(chan_id)
+                )
+                chan_id = None
+                await websocket.send(msg)
         recv_task.cancel()
         await websocket.close()
 
 
-async def main():
+async def run():
     try:
         async with asyncio.TaskGroup() as tg:
             tasks: list[asyncio.Task] = []
@@ -124,5 +134,9 @@ async def main():
         print("Shutting down...")
 
 
+def main():
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -1,48 +1,15 @@
+from urllib.parse import parse_qs, urlparse
 import asyncio
-from enum import IntEnum
 import websockets
-from snow import Snowflake
-from time import time
 import sys
 import msgpack
 
-from urllib.parse import parse_qs, urlparse
+from chat.utils import mk_pack
+from chat.protocoltypes import Command, PackIDX, Snowflake
+
 
 MAX_TOTAL_QUEUE = 100000  # max total queued messages across all clients
 MAX_QUEUE_PER_CLIENT = 500  # per-client queue size
-
-
-class Command(IntEnum):
-    REGISTER = 1
-    JOIN_CHANNEL = 2
-    WRITE_TO_CHANNEL = 3
-    WRITE_TO_USER = 4
-    GET_CHAN_LIST = 5
-    CHAN_LIST_DATA = 6
-
-
-class PackIDX(IntEnum):
-    COMMAND = 0
-    ID = 1
-    NAME = 2
-    CONTENT = 3
-    CHANNEL = 4
-    TO_ID = 5
-    TS = 6
-
-
-def mk_pack(
-    command: Command,
-    id: int,
-    name: str,
-    content: str | dict[int, str] | list[tuple],
-    chan: int = 0,
-    to: int = 0,
-    ts: float | None = None,
-) -> bytes:
-    if ts is None:
-        ts = time()
-    return msgpack.packb((command, id, name, content, chan, to, ts))  # type: ignore
 
 
 class ClientSession:
@@ -67,7 +34,7 @@ class ClientSession:
             self.closed = True
 
 
-class WebsocketServer:
+class ChatServer:
     def __init__(self):
         self.clients = {}
         self.channels: dict[int, dict[int, str]] = {
@@ -119,20 +86,34 @@ class WebsocketServer:
             except asyncio.CancelledError:
                 pass
 
+    async def leave_channel(self, id, chan_id, name: str):
+        session: ClientSession = self.clients[id]
+
+        if chan_id not in session.channels:
+            return None
+        # Send leave message..
+        msg = (Command.LEAVE_CHANNEL_RESP, id, name, "LEFT", chan_id, id, None)
+        session.channels.remove(chan_id)
+        del self.channels[chan_id][id]
+        await self.write_to_channel(msg)
+
     async def register_on_channel(self, ws, id: int, chan_id: int, name: str):
         self.channels[chan_id][id] = str(name)
         session: ClientSession = self.clients[id]
         session.channels.add(chan_id)
-        await session.queue.put(str(chan_id))
+        msg = mk_pack(Command.JOIN_CHANNEL_RESP, id, name, "", chan_id, id)
+        await session.queue.put(msg)
 
     async def send_chan_list(self, ws, msg):
-        command = Command.CHAN_LIST_DATA
+        command = Command.CHAN_LIST_RESP
         id = msg[PackIDX.ID]
         session: ClientSession = self.clients[id]
         chan_id = msg[PackIDX.CHANNEL]
         content = self.channels[chan_id].copy()
-        new_msg = mk_pack(command, id, msg[PackIDX.NAME], content, chan_id, to=id)
-        print("REQ for channel list")
+        new_msg = mk_pack(
+            command, id, msg[PackIDX.NAME], content, chan_id, to=id
+        )
+
         await session.queue.put(new_msg)
 
     async def write_to_channel(self, msg: tuple):
@@ -156,7 +137,7 @@ class WebsocketServer:
 
     async def stats_printer(self):
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
             delta_in = self.msg_in - self.last_msg_in
             delta_out = self.msg_out - self.last_msg_out
 
@@ -192,28 +173,40 @@ class WebsocketServer:
             async for raw in ws:
                 self.msg_in += 1
                 msg = msgpack.unpackb(raw)
+                # print(f"Recv: {Command(msg[PackIDX.COMMAND]).name}")
                 match msg[PackIDX.COMMAND]:
                     case Command.JOIN_CHANNEL:
                         chan_id = msg[PackIDX.CHANNEL]
                         await self.register_on_channel(ws, id, chan_id, name)
-                        continue
+                    case Command.LEAVE_CHANNEL:
+                        chan_id = msg[PackIDX.CHANNEL]
+                        await self.leave_channel(id, chan_id, name)
                     case Command.WRITE_TO_CHANNEL:
                         chan_id = msg[PackIDX.CHANNEL]
                         await self.write_to_channel(msg)
-                        continue
-                    case Command.GET_CHAN_LIST:
+
+                    case Command.LEAVE_CHANNEL_RESP:
+                        chan_id = msg[PackIDX.CHANNEL]
+                        await self.write_to_channel(msg)
+
+                    case Command.CHAN_LIST:
                         await self.send_chan_list(ws, msg)
-                        continue
+
                     case _:
-                        print(f"Well this is awkward{msg}")
-                        continue
+                        print(
+                            f"Unhandles command: {Command(msg[PackIDX.COMMAND]).name}"
+                        )
 
         finally:
             await self.unregister(id)
 
 
-async def main():
-    server = WebsocketServer()
+def main():
+    asyncio.run(run())
+
+
+async def run():
+    server = ChatServer()
 
     port = sys.argv[1]
 
@@ -225,11 +218,15 @@ async def main():
         except Exception as e:
             print(f"Unexpected error: {e}")
 
-    async with websockets.serve(server.handle_connection, "localhost", int(port)):
+    async with websockets.serve(
+        server.handle_connection, "localhost", int(port)
+    ):
         asyncio.create_task(server.stats_printer())
+
         print("Server started on ws://localhost:8765")
+
         await asyncio.Future()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

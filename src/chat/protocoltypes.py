@@ -1,3 +1,5 @@
+from dataclasses import dataclass, asdict
+from enum import IntEnum, auto
 import time
 
 # --- Constants ---
@@ -11,11 +13,61 @@ MAX_SEQUENCE = (1 << SEQUENCE_BITS) - 1  # 4095
 WORKER_SHIFT = SEQUENCE_BITS  # 12
 TIMESTAMP_SHIFT = SEQUENCE_BITS + WORKER_BITS  # 22
 
-# Default custom epoch (ms since UNIX epoch)
 DEFAULT_EPOCH = 1700000000000
 
 
-# --- Snowflake class ---
+class Command(IntEnum):
+    REGISTER = auto()
+    JOIN_CHANNEL = auto()
+    JOIN_CHANNEL_RESP = auto()
+    WRITE_TO_CHANNEL = auto()
+    WRITE_TO_USER = auto()
+    CHAN_LIST = auto()
+    CHAN_LIST_RESP = auto()
+    LEAVE_CHANNEL = auto()
+    LEAVE_CHANNEL_RESP = auto()
+    DISCONNECT = auto()
+
+
+class PackIDX(IntEnum):
+    COMMAND = 0
+    ID = 1
+    NAME = 2
+    CONTENT = 3
+    CHANNEL = 4
+    TO_ID = 5
+    TS = 6
+
+
+@dataclass(slots=True)
+class Message:
+    command: Command
+    id: int
+    name: str
+    content: str | dict[int | str, str] | list[tuple]
+    chan: int = 0
+    to: int = 0
+    ts: float | None = None
+
+    def dict(self) -> dict:
+        return {
+            "command": int(self.command),
+            "id": self.id,
+            "name": self.name,
+            "content": self.content,
+            "chan": self.chan,
+            "to": self.to,
+            "ts": self.ts,
+        }
+
+
+@dataclass(slots=True)
+class User:
+    id: int
+    name: str
+    unread: int
+
+
 class Snowflake:
     __slots__ = ("worker_id", "last_ts", "sequence", "epoch")
 
@@ -72,8 +124,6 @@ class Snowflake:
     # Extract just timestamp (ms)
     @staticmethod
     def timestamp_from(snowflake_id: int, epoch: int = DEFAULT_EPOCH) -> int:
-        return ((snowflake_id >> TIMESTAMP_SHIFT) & ((1 << TIMESTAMP_BITS) - 1)) + epoch
-
-
-if __name__ == "__main__":
-    breakpoint()
+        return (
+            (snowflake_id >> TIMESTAMP_SHIFT) & ((1 << TIMESTAMP_BITS) - 1)
+        ) + epoch
