@@ -15,12 +15,19 @@ MAX_QUEUE_PER_CLIENT = 500  # per-client queue size
 class ClientSession:
     def __init__(self, ws, server):
         self.ws = ws
-
+        self.inbound = asyncio.Queue()
         self.server = server
         self.queue = asyncio.Queue(maxsize=MAX_QUEUE_PER_CLIENT)
         self.writer_task = asyncio.create_task(self.writer())
         self.closed = False
         self.channels: set[int] = set()
+        self.processor_task = asyncio.create_task(self.processor())
+
+    async def processor(self):
+        while True:
+            raw = await self.inbound.get()
+            msg = msgpack.unpackb(raw, strict_map_keys=False)
+            await self.server.handle_message(self, msg)
 
     async def writer(self):
         try:
@@ -73,7 +80,11 @@ class ChatServer:
         id = self.sf.next_id()
         session = ClientSession(ws, self)
         self.clients[id] = session
-        await session.queue.put(str(id))
+        try:
+            session.queue.put_nowait(str(id))
+        except asyncio.QueueFull:
+            await self.unregister(id)
+
         return id
 
     async def unregister(self, id):
@@ -97,12 +108,20 @@ class ChatServer:
         del self.channels[chan_id][id]
         await self.write_to_channel(msg)
 
-    async def register_on_channel(self, ws, id: int, chan_id: int, name: str):
+    async def register_on_channel(self, id: int, chan_id: int, name: str):
         self.channels[chan_id][id] = str(name)
         session: ClientSession = self.clients[id]
         session.channels.add(chan_id)
+
         msg = mk_pack(Command.JOIN_CHANNEL_RESP, id, name, "", chan_id, id)
-        await session.queue.put(msg)
+
+        wlc_msg = (Command.WELCOME_TO_CHANNEL, id, name, "", chan_id, id)
+        try:
+            session.queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            await self.unregister(id)
+
+        await self.write_to_channel(wlc_msg)
 
     async def send_chan_list(self, ws, msg):
         command = Command.CHAN_LIST_RESP
@@ -114,23 +133,29 @@ class ChatServer:
             command, id, msg[PackIDX.NAME], content, chan_id, to=id
         )
 
-        await session.queue.put(new_msg)
+        try:
+            session.queue.put_nowait(new_msg)
+        except asyncio.QueueFull:
+            await self.unregister(id)
 
     async def write_to_channel(self, msg: tuple):
         chan = int(msg[PackIDX.CHANNEL])
         id = int(msg[PackIDX.ID])
         message = mk_pack(*msg)
+
         for a in list(self.channels[chan].keys()):
             session = self.clients[a]
-            try:
-                await session.queue.put(message)
-            except asyncio.QueueFull:
-                await self.unregister(id)
+            if not session:
+                continue
+            if not session.queue.full():
+                session.queue.put_nowait(message)
+            else:
+                pass
 
     async def broadcast(self, message: bytes):
         for client_id, session in list(self.clients.items()):
             try:
-                await session.queue.put(message)
+                session.queue.put_nowait(message)
             except asyncio.QueueFull:
                 print(f"Client {client_id} is too slow, disconnecting.")
                 await self.unregister(client_id)
@@ -177,18 +202,18 @@ class ChatServer:
                 match msg[PackIDX.COMMAND]:
                     case Command.JOIN_CHANNEL:
                         chan_id = msg[PackIDX.CHANNEL]
-                        await self.register_on_channel(ws, id, chan_id, name)
+                        await self.register_on_channel(id, chan_id, name)
                     case Command.LEAVE_CHANNEL:
                         chan_id = msg[PackIDX.CHANNEL]
                         await self.leave_channel(id, chan_id, name)
+                    case Command.WELCOME_TO_CHANNEL:
+                        await self.write_to_channel(msg)
                     case Command.WRITE_TO_CHANNEL:
                         chan_id = msg[PackIDX.CHANNEL]
                         await self.write_to_channel(msg)
-
                     case Command.LEAVE_CHANNEL_RESP:
                         chan_id = msg[PackIDX.CHANNEL]
                         await self.write_to_channel(msg)
-
                     case Command.CHAN_LIST:
                         await self.send_chan_list(ws, msg)
 

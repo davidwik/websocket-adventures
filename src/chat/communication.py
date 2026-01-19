@@ -14,7 +14,7 @@ class Consumer:
         self.queue: asyncio.Queue[Message] = asyncio.Queue()
 
     async def start(self):
-        self.listen_task: asyncio.Task = asyncio.create_task(self.listener())
+        self.listen_task = asyncio.create_task(self.listener())
 
     async def listener(self):
         try:

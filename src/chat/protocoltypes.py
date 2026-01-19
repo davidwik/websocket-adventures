@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from enum import IntEnum, auto
 import time
 
@@ -20,6 +20,7 @@ class Command(IntEnum):
     REGISTER = auto()
     JOIN_CHANNEL = auto()
     JOIN_CHANNEL_RESP = auto()
+    WELCOME_TO_CHANNEL = auto()
     WRITE_TO_CHANNEL = auto()
     WRITE_TO_USER = auto()
     CHAN_LIST = auto()

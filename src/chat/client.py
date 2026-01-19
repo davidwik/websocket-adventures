@@ -109,6 +109,9 @@ class Client:
                 case Command.LEAVE_CHANNEL_RESP:
                     self.log.get_channel(msg.chan).append(msg)
                     self.print_active_chan(msg)
+                case Command.WELCOME_TO_CHANNEL:
+                    self.log.get_channel(msg.chan).append(msg)
+                    self.print_active_chan(msg)
                 case Command.JOIN_CHANNEL_RESP:
                     self.active_chan_id = msg.chan
                 case Command.CHAN_LIST_RESP:
@@ -127,13 +130,18 @@ class Client:
             await asyncio.to_thread(func, msg)
 
     def print_active_chan(self, msg: Message):
-        if (
-            msg.command is Command.LEAVE_CHANNEL_RESP
-            and msg.chan == self.active_chan_id
-        ):
-            print(f"<< {msg.name} LEFT THE CHANNEL")
-        else:
-            print(f"{msg.name}: {msg.content}")
+        if self.active_chan_id != msg.chan:
+            return None
+
+        match msg.command:
+            case Command.LEAVE_CHANNEL_RESP:
+                print(f"<< {msg.name} LEFT THE CHANNEL.")
+            case Command.WELCOME_TO_CHANNEL:
+                print(f">> {msg.name} JOINED US!")
+            case Command.WRITE_TO_CHANNEL:
+                print(f"{msg.name}: {msg.content}")
+            case _:
+                pass
 
     def register_callback(
         self, cmd: Command, callback: Callable[[Message], None]
