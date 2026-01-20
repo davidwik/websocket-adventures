@@ -8,7 +8,7 @@ import msgpack
 import random
 import uvloop
 
-CLIENTS = 2000
+CLIENTS = 4000
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
     "Det var minsann bättre förr",

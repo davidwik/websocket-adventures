@@ -42,7 +42,7 @@ class ClientSession:
         try:
             while True:
                 raw = await self.inbound.get()
-                msg = await loop.run_in_executor(None, msgpack.unpackb, raw)
+                # msg = await loop.run_in_executor(None, msgpack.unpackb, raw)
                 msg = msgpack.unpackb(raw, strict_map_key=False)
                 # msg = await asyncio.to_thread(msgpack.unpackb, raw)
                 await self.server.handle_message(self, msg)
@@ -90,27 +90,6 @@ class ClientSession:
             print(f"Writer error: {e}")
         finally:
             self.closed = True
-
-            # async def writer(self):
-
-    #     try:
-    #         while True:
-    #             msg = await self.queue.get()
-
-    #             try:
-    #                 await asyncio.wait_for(self.ws.send(msg), timeout=5.0)
-    #                 self.server.msg_out += 1
-
-    #             except asyncio.TimeoutError:
-    #                 print("Send timeout client might be slow..")
-    #                 break
-
-    #     except asyncio.CancelledError:
-    #         pass
-    #     except Exception as e:
-    #         print(f"Writer error: {e}")
-    #     finally:
-    #         self.closed = True
 
 
 class ChatServer:
@@ -227,32 +206,6 @@ class ChatServer:
                 print(f"Client {client_id} is too slow, disconnecting.")
                 await self.unregister(client_id)
 
-    # async def stats_printer(self):
-    #     while True:
-    #         await asyncio.sleep(5)
-    #         delta_in = self.msg_in - self.last_msg_in
-    #         delta_out = self.msg_out - self.last_msg_out
-
-    #         total_clients = len(self.clients)
-    #         total_queued = sum(
-    #             session.queue.qsize() for session in self.clients.values()
-    #         )
-
-    #         f = ""
-    #         for x, y in self.channels.items():
-    #             f += f"[CHANNEL {x}] = {len(y)}\n"
-    #         print(f)
-
-    #         self.total_queued_items = total_queued
-    #         print(
-    #             f"-----\nclients={total_clients}"
-    #             f"\ntotal_queued_msgs={total_queued}"
-    #             f"\nin={delta_in}/s"
-    #             f"\nout={delta_out}/s"
-    #         )
-    #         self.last_msg_in = self.msg_in
-    #         self.last_msg_out = self.msg_out
-
     async def stats_printer(self):
         while True:
             await asyncio.sleep(5)
@@ -296,13 +249,12 @@ class ChatServer:
             return
         try:
             session: ClientSession = self.clients[id]
-            msg_count = 0
+
             async for raw in ws:
                 try:
                     start = asyncio.get_event_loop().time()
                     session.inbound.put_nowait(raw)
-                    if msg_count % 10 == 0:
-                        await asyncio.sleep(0)
+
                 except asyncio.QueueFull:
                     print("Inbound queue full, dropping messagde")
         finally:
