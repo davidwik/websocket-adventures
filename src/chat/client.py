@@ -7,7 +7,7 @@ from chat.communication import Producer, Consumer, Log
 from time import sleep
 
 NAME = "David"
-CHANNEL = 2
+CHANNEL = 1
 
 
 def update_userlist(msg: Message):

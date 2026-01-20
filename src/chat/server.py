@@ -9,7 +9,7 @@ from chat.utils import mk_pack
 from chat.protocoltypes import Command, PackIDX, Snowflake
 
 
-MAX_QUEUE_PER_CLIENT = 500  # Reduced - clients must keep up
+MAX_QUEUE_PER_CLIENT = 2000  # Reduced - clients must keep up
 MAX_INBOUND_PER_CLIENT = 100  # Limit inbound processing queue
 MAX_CLIENTS = 10000  # Hard limit on concurrent clients
 
@@ -49,6 +49,14 @@ class ClientSession:
 
         except Exception as e:
             print(f"Processor error {e}")
+
+    async def cleanup(self):
+        """Cleanup both tasks"""
+        self.processor_task.cancel()
+        self.writer_task.cancel()
+        await asyncio.gather(
+            self.processor_task, self.writer_task, return_exceptions=True
+        )
 
     async def writer(self):
         """Write messages with batching"""
@@ -114,6 +122,7 @@ class ChatServer:
         self.last_msg_in = 0
         self.last_msg_out = 0
         self.total_queued_items = 0
+        self._unregistering = set()  # Track clients being unregistered
 
     async def register(self, ws, name):
         # total_queued = sum(s.queue.qsize() for s in self.clients.values())
@@ -137,15 +146,42 @@ class ChatServer:
             await self.unregister(id)
         return id
 
+    # async def unregister(self, id):
+    #     if id in self._unregistering:
+    #         return
+    #     session = self.clients.pop(id, None)
+    #     _ = [self.channels[a].pop(id) for a in session.channels]
+    #     if session:
+    #         session.writer_task.cancel()
+    #         try:
+    #             await session.writer_task
+    #         except asyncio.CancelledError:
+    #             pass
+
+    #     if id in self._unregistering:
+    #         return
+    #     session = self.clients.pop(id, None)
+
     async def unregister(self, id):
-        session = self.clients.pop(id)
-        _ = [self.channels[a].pop(id) for a in session.channels]
-        if session:
-            session.writer_task.cancel()
-            try:
-                await session.writer_task
-            except asyncio.CancelledError:
-                pass
+        # Prevent double-unregister (race condition fix)
+        if id in self._unregistering:
+            return
+        self._unregistering.add(id)
+
+        try:
+            session = self.clients.pop(id, None)
+            if not session:
+                return
+
+            # Remove from all channels
+            for chan_id in list(session.channels):
+                self.channels[chan_id].pop(id, None)
+
+            # Cleanup tasks
+            await session.cleanup()
+
+        finally:
+            self._unregistering.discard(id)
 
     async def leave_channel(self, id, chan_id, name: str):
         session: ClientSession = self.clients[id]
@@ -188,15 +224,49 @@ class ChatServer:
 
     async def write_to_channel(self, msg: tuple):
         chan = int(msg[PackIDX.CHANNEL])
-        id = int(msg[PackIDX.ID])
         message = mk_pack(*msg)
 
-        for i, a in enumerate(self.channels[chan].keys()):
-            session = self.clients[a]
+        # Snapshot of channel members
+        members = list(self.channels[chan].keys())
+        slow_clients = []
+
+        for i, client_id in enumerate(members):
+            session = self.clients.get(client_id)
             if not session:
                 continue
-            if not session.queue.full():
-                await session.queue.put(message)
+
+            try:
+                session.queue.put_nowait(message)
+            except asyncio.QueueFull:
+                # Disconnect slow clients
+                slow_clients.append(client_id)
+
+            # Yield every 100 clients
+            if i % 100 == 0 and i > 0:
+                await asyncio.sleep(0)
+
+        # Cleanup slow clients in background
+        if slow_clients:
+            asyncio.create_task(self._cleanup_slow_clients(slow_clients))
+
+    # async def write_to_channel(self, msg: tuple):
+    #     chan = int(msg[PackIDX.CHANNEL])
+    #     message = mk_pack(*msg)
+
+    #     for a in self.channels[chan].keys():
+    #         session = self.clients.get(a)
+    #         if not session:
+    #             continue
+    #         try:
+    #             session.queue.put_nowait(message)
+    #         except asyncio.QueueFull:
+    #             # optionally disconnect slow client
+    #             pass
+
+    async def _cleanup_slow_clients(self, client_ids):
+        """Background cleanup of slow clients"""
+        for client_id in client_ids:
+            await self.unregister(client_id)
 
     async def broadcast(self, message: bytes):
         for client_id, session in list(self.clients.items()):
@@ -221,6 +291,18 @@ class ChatServer:
                 session.inbound.qsize() for session in self.clients.values()
             )
 
+            # Count full/slow queues
+            slow_clients = sum(
+                1
+                for s in self.clients.values()
+                if s.queue.qsize() > MAX_QUEUE_PER_CLIENT * 0.7
+            )
+
+            # Count dead writers
+            dead_writers = sum(
+                1 for s in self.clients.values() if s.writer_task.done()
+            )
+
             channel_info = "\n".join(
                 f"[CHANNEL {x}] = {len(y)}"
                 for x, y in self.channels.items()
@@ -229,15 +311,58 @@ class ChatServer:
             if channel_info:
                 print(channel_info)
 
+            avg_queue = total_queued / total_clients if total_clients > 0 else 0
+
             print(
-                f"-----\nclients={total_clients}"
-                f"\nqueued_out={total_queued}"
+                f"-----\nclients={total_clients} (slow: {slow_clients}, dead: {dead_writers})"
+                f"\nqueued_out={total_queued} (avg: {avg_queue:.1f})"
                 f"\nqueued_in={total_inbound}"
-                f"\nin={delta_in}/s ({delta_in / 5:.0f} msg/s)"
-                f"\nout={delta_out}/s ({delta_out / 5:.0f} msg/s)"
+                f"\nin={delta_in / 5:.0f} msg/s"
+                f"\nout={delta_out / 5:.0f} msg/s"
+                f"\ntotal={self.msg_in:,}"
             )
+
+            # Warnings
+            if dead_writers > 0:
+                print(f"⚠️  WARNING: {dead_writers} dead writer tasks!")
+            if slow_clients > total_clients * 0.1:
+                print(f"⚠️  WARNING: {slow_clients} slow clients!")
+
             self.last_msg_in = self.msg_in
             self.last_msg_out = self.msg_out
+
+    # async def stats_printer(self):
+    #     while True:
+    #         await asyncio.sleep(5)
+    #         delta_in = self.msg_in - self.last_msg_in
+    #         delta_out = self.msg_out - self.last_msg_out
+
+    #         total_clients = len(self.clients)
+    #         total_queued = sum(
+    #             session.queue.qsize() for session in self.clients.values()
+    #         )
+
+    #         total_inbound = sum(
+    #             session.inbound.qsize() for session in self.clients.values()
+    #         )
+
+    #         channel_info = "\n".join(
+    #             f"[CHANNEL {x}] = {len(y)}"
+    #             for x, y in self.channels.items()
+    #             if y
+    #         )
+    #         if channel_info:
+    #             print(channel_info)
+
+    #         print(
+    #             f"-----\nclients={total_clients}"
+    #             f"\nqueued_out={total_queued}"
+    #             f"\nqueued_in={total_inbound}"
+    #             f"\nin={delta_in}/s ({delta_in / 5:.0f} msg/s)"
+    #             f"\nout={delta_out}/s ({delta_out / 5:.0f} msg/s)"
+    #         )
+    #         self.last_msg_in = self.msg_in
+    #         self.last_msg_out = self.msg_out
 
     async def handle_connection(self, ws):
         # Check if the server status is not OVERLOADED

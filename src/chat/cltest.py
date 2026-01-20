@@ -8,7 +8,7 @@ import msgpack
 import random
 import uvloop
 
-CLIENTS = 4000
+CLIENTS = 2000
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
     "Det var minsann bättre förr",
@@ -62,9 +62,11 @@ async def simulate_chat():
     port = sys.argv[1]
 
     async with websockets.connect(
-        f"ws://localhost:{port}?username={quote(name)}", ping_interval=None
+        f"ws://localhost:{port}?username={quote(name)}",
+        ping_interval=None,
+        max_size=2**20,
     ) as websocket:
-        ## First get the id
+        # Get ID
         try:
             id = await websocket.recv()
             if not str(id).isnumeric():
@@ -72,11 +74,12 @@ async def simulate_chat():
         except websockets.ConnectionClosedError:
             print("Failed to connect to server.. maybe busy?")
             return None
+
         id = int(id)
         print(f"Got ID: {id}")
-        ## Join a channel
-        chan = random.randint(0, 10)
-        chan_id = None
+
+        # Join a channel
+        chan = random.randint(0, 1)
         msg = mk_pack(Command.JOIN_CHANNEL, id, name, "", chan)
         await websocket.send(msg)
 
@@ -91,23 +94,93 @@ async def simulate_chat():
 
         if chan_id is None:
             print("Failed to get chanid")
+            return None
 
-        keep_chatting = True
+        # CRITICAL: Start receiving messages in background
+        async def receive_messages():
+            """Continuously drain incoming messages"""
+            try:
+                async for raw_msg in websocket:
+                    # Just discard messages - we don't need to process them
+                    # If you want to process them, do it without blocking:
+                    # asyncio.create_task(process_message(raw_msg))
+                    pass
+            except websockets.ConnectionClosed:
+                pass
 
-        while keep_chatting:
-            delay = random.randint(500, 3000)
-            await asyncio.sleep(delay / 100)
-            txt = random.choice(strings)
-            msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, int(chan_id))
-            await websocket.send(msg)
-            # if random.randint(0, 10) == 5:
-            #    msg = mk_pack(
-            #        Command.LEAVE_CHANNEL, id, name, "leaving", int(chan_id)
-            #    )
-            #    chan_id = None
-            # await websocket.send(msg)
+        async def send_messages():
+            """Send messages periodically"""
+            try:
+                while True:
+                    delay = random.randint(500, 3000)
+                    await asyncio.sleep(delay / 1000)  # Note: /1000 not /100
+                    txt = random.choice(strings)
+                    msg = mk_pack(
+                        Command.WRITE_TO_CHANNEL, id, name, txt, int(chan_id)
+                    )
+                    await websocket.send(msg)
+            except websockets.ConnectionClosed:
+                pass
 
-        await websocket.close()
+        # Run both concurrently
+        await asyncio.gather(
+            receive_messages(), send_messages(), return_exceptions=True
+        )
+
+
+# async def simulate_chat():
+#     id = None
+#     chan_id = None
+#     name = f"{random.choice(names)}_{random.randint(0, 100)}"
+#     port = sys.argv[1]
+
+#     async with websockets.connect(
+#         f"ws://localhost:{port}?username={quote(name)}", ping_interval=None
+#     ) as websocket:
+#         ## First get the id
+#         try:
+#             id = await websocket.recv()
+#             if not str(id).isnumeric():
+#                 return None
+#         except websockets.ConnectionClosedError:
+#             print("Failed to connect to server.. maybe busy?")
+#             return None
+#         id = int(id)
+#         print(f"Got ID: {id}")
+#         ## Join a channel
+#         chan = random.randint(0, 10)
+#         chan_id = None
+#         msg = mk_pack(Command.JOIN_CHANNEL, id, name, "", chan)
+#         await websocket.send(msg)
+
+#         try:
+#             msg = await websocket.recv()
+#             msg = msgpack.unpackb(msg, strict_map_key=False)
+#             if msg[PackIDX.COMMAND] == Command.JOIN_CHANNEL_RESP:
+#                 chan_id = msg[PackIDX.CHANNEL]
+#         except websockets.ConnectionClosedError:
+#             print("Failed to register on channel..")
+#             return None
+
+#         if chan_id is None:
+#             print("Failed to get chanid")
+
+#         keep_chatting = True
+
+#         while keep_chatting:
+#             delay = random.randint(500, 3000)
+#             await asyncio.sleep(delay / 100)
+#             txt = random.choice(strings)
+#             msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, int(chan_id))
+#             await websocket.send(msg)
+#             # if random.randint(0, 10) == 5:
+#             #    msg = mk_pack(
+#             #        Command.LEAVE_CHANNEL, id, name, "leaving", int(chan_id)
+#             #    )
+#             #    chan_id = None
+#             # await websocket.send(msg)
+
+#         await websocket.close()
 
 
 async def run():
