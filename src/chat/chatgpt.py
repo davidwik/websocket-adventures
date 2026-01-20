@@ -12,7 +12,7 @@ MESSAGE = 3
 class ClientSession:
     def __init__(self, ws, server):
         self.ws = ws
-        self.server = server
+        self.server: ChatServer = server
 
         # Queue for messages this client needs to send
         self.send_queue = asyncio.Queue(maxsize=100)
@@ -112,7 +112,11 @@ class ChatServer:
                     asyncio.create_task(self.unregister(client))
 
 
-async def main():
+def main():
+    asyncio.run(run())
+
+
+async def run():
     server = ChatServer()
     async with websockets.serve(server.handle_connection, "localhost", 8765):
         print("Chat server running at ws://localhost:8765")
@@ -120,4 +124,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

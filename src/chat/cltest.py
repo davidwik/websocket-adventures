@@ -6,9 +6,9 @@ from urllib.parse import quote
 import sys
 import msgpack
 import random
+import uvloop
 
-CLIENTS = 2200
-
+CLIENTS = 1000
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
     "Det var minsann bättre förr",
@@ -62,9 +62,7 @@ async def simulate_chat():
     port = sys.argv[1]
 
     async with websockets.connect(
-        f"ws://localhost:{port}?username={quote(name)}",
-        ping_timeout=None,
-        close_timeout=None,
+        f"ws://localhost:{port}?username={quote(name)}", ping_interval=None
     ) as websocket:
         ## First get the id
         try:
@@ -75,7 +73,7 @@ async def simulate_chat():
             print("Failed to connect to server.. maybe busy?")
             return None
         id = int(id)
-
+        print(f"Got ID: {id}")
         ## Join a channel
         chan = random.randint(0, 10)
         chan_id = None
@@ -102,12 +100,12 @@ async def simulate_chat():
             txt = random.choice(strings)
             msg = mk_pack(Command.WRITE_TO_CHANNEL, id, name, txt, int(chan_id))
             await websocket.send(msg)
-            if random.randint(0, 10) == 5:
-                msg = mk_pack(
-                    Command.LEAVE_CHANNEL, id, name, "leaving", int(chan_id)
-                )
-                chan_id = None
-                # await websocket.send(msg)
+            # if random.randint(0, 10) == 5:
+            #    msg = mk_pack(
+            #        Command.LEAVE_CHANNEL, id, name, "leaving", int(chan_id)
+            #    )
+            #    chan_id = None
+            # await websocket.send(msg)
 
         await websocket.close()
 
@@ -125,7 +123,8 @@ async def run():
 
 
 def main():
-    asyncio.run(run())
+    uvloop.run(run())
+    # asyncio.run(run())
 
 
 if __name__ == "__main__":
