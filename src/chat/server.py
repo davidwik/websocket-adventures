@@ -3,6 +3,7 @@ import asyncio
 import websockets
 import sys
 import msgpack
+import uvloop
 
 from chat.utils import mk_pack
 from chat.protocoltypes import Command, PackIDX, Snowflake
@@ -14,6 +15,18 @@ MAX_CLIENTS = 10000  # Hard limit on concurrent clients
 
 
 class ClientSession:
+    __slots__ = (
+        "ws",
+        "server",
+        "inbound",
+        "queue",
+        "closed",
+        "channels",
+        "writer_task",
+        "processor_task",
+        "id",
+    )
+
     def __init__(self, ws, server):
         self.ws = ws
         self.server: ChatServer = server
@@ -33,30 +46,71 @@ class ClientSession:
                 msg = msgpack.unpackb(raw, strict_map_key=False)
                 # msg = await asyncio.to_thread(msgpack.unpackb, raw)
                 await self.server.handle_message(self, msg)
-                await asyncio.sleep(0.2)
 
         except Exception as e:
             print(f"Processor error {e}")
 
     async def writer(self):
+        """Write messages with batching"""
         try:
             while True:
                 msg = await self.queue.get()
 
+                # Send immediately
                 try:
-                    await asyncio.wait_for(self.ws.send(msg), timeout=5.0)
+                    await self.ws.send(msg)
                     self.server.msg_out += 1
-                    await asyncio.sleep(0.2)
-                except asyncio.TimeoutError:
-                    print("Send timeout client might be slow..")
+                except websockets.ConnectionClosed:
+                    break
+                except Exception as e:
+                    print(f"Send error: {e}")
                     break
 
+                # Opportunistically send more from queue without waiting
+                sent_count = 1
+                while sent_count < 20 and not self.queue.empty():
+                    try:
+                        next_msg = self.queue.get_nowait()
+                        await self.ws.send(next_msg)
+                        self.server.msg_out += 1
+                        sent_count += 1
+                    except asyncio.QueueEmpty:
+                        break
+                    except websockets.ConnectionClosed:
+                        return
+                    except Exception:
+                        break
+
+                # Yield after batch
+                if sent_count > 5:
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             print(f"Writer error: {e}")
         finally:
             self.closed = True
+
+            # async def writer(self):
+
+    #     try:
+    #         while True:
+    #             msg = await self.queue.get()
+
+    #             try:
+    #                 await asyncio.wait_for(self.ws.send(msg), timeout=5.0)
+    #                 self.server.msg_out += 1
+
+    #             except asyncio.TimeoutError:
+    #                 print("Send timeout client might be slow..")
+    #                 break
+
+    #     except asyncio.CancelledError:
+    #         pass
+    #     except Exception as e:
+    #         print(f"Writer error: {e}")
+    #     finally:
+    #         self.closed = True
 
 
 class ChatServer:
@@ -121,7 +175,7 @@ class ChatServer:
             return None
         # Send leave message..
         msg = (Command.LEAVE_CHANNEL_RESP, id, name, "LEFT", chan_id, id, None)
-        session.channels.remove(chan_id)
+        session.channels.discard(chan_id)
         del self.channels[chan_id][id]
         await self.write_to_channel(msg)
 
@@ -165,11 +219,6 @@ class ChatServer:
             if not session.queue.full():
                 await session.queue.put(message)
 
-            if i % 50 == 0:
-                await asyncio.sleep(0)
-            else:
-                pass
-
     async def broadcast(self, message: bytes):
         for client_id, session in list(self.clients.items()):
             try:
@@ -177,6 +226,32 @@ class ChatServer:
             except asyncio.QueueFull:
                 print(f"Client {client_id} is too slow, disconnecting.")
                 await self.unregister(client_id)
+
+    # async def stats_printer(self):
+    #     while True:
+    #         await asyncio.sleep(5)
+    #         delta_in = self.msg_in - self.last_msg_in
+    #         delta_out = self.msg_out - self.last_msg_out
+
+    #         total_clients = len(self.clients)
+    #         total_queued = sum(
+    #             session.queue.qsize() for session in self.clients.values()
+    #         )
+
+    #         f = ""
+    #         for x, y in self.channels.items():
+    #             f += f"[CHANNEL {x}] = {len(y)}\n"
+    #         print(f)
+
+    #         self.total_queued_items = total_queued
+    #         print(
+    #             f"-----\nclients={total_clients}"
+    #             f"\ntotal_queued_msgs={total_queued}"
+    #             f"\nin={delta_in}/s"
+    #             f"\nout={delta_out}/s"
+    #         )
+    #         self.last_msg_in = self.msg_in
+    #         self.last_msg_out = self.msg_out
 
     async def stats_printer(self):
         while True:
@@ -189,17 +264,24 @@ class ChatServer:
                 session.queue.qsize() for session in self.clients.values()
             )
 
-            f = ""
-            for x, y in self.channels.items():
-                f += f"[CHANNEL {x}] = {len(y)}\n"
-            print(f)
+            total_inbound = sum(
+                session.inbound.qsize() for session in self.clients.values()
+            )
 
-            self.total_queued_items = total_queued
+            channel_info = "\n".join(
+                f"[CHANNEL {x}] = {len(y)}"
+                for x, y in self.channels.items()
+                if y
+            )
+            if channel_info:
+                print(channel_info)
+
             print(
                 f"-----\nclients={total_clients}"
-                f"\ntotal_queued_msgs={total_queued}"
-                f"\nin={delta_in}/s"
-                f"\nout={delta_out}/s"
+                f"\nqueued_out={total_queued}"
+                f"\nqueued_in={total_inbound}"
+                f"\nin={delta_in}/s ({delta_in / 5:.0f} msg/s)"
+                f"\nout={delta_out}/s ({delta_out / 5:.0f} msg/s)"
             )
             self.last_msg_in = self.msg_in
             self.last_msg_out = self.msg_out
@@ -256,7 +338,7 @@ class ChatServer:
 
 
 def main():
-    asyncio.run(run())
+    uvloop.run(run())
 
 
 async def run():

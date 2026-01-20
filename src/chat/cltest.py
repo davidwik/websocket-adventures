@@ -8,7 +8,7 @@ import msgpack
 import random
 import uvloop
 
-CLIENTS = 1000
+CLIENTS = 2000
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
     "Det var minsann bättre förr",
@@ -115,7 +115,7 @@ async def run():
         async with asyncio.TaskGroup() as tg:
             tasks: list[asyncio.Task] = []
             for _ in range(0, CLIENTS):
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.02)
                 tasks.append(tg.create_task(simulate_chat()))
 
     except KeyboardInterrupt:
