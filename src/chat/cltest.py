@@ -8,7 +8,9 @@ import msgpack
 import random
 import uvloop
 
-CLIENTS = 2000
+
+MAX_CHANS = 5
+CLIENTS = 1200
 strings = [
     "Det är jo väldigt fint väder vi har här i Köping",
     "Det var minsann bättre förr",
@@ -79,7 +81,7 @@ async def simulate_chat():
         print(f"Got ID: {id}")
 
         # Join a channel
-        chan = random.randint(0, 1)
+        chan = random.randint(0, MAX_CHANS)
         msg = mk_pack(Command.JOIN_CHANNEL, id, name, "", chan)
         await websocket.send(msg)
 
