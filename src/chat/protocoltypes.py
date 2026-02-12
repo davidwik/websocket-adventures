@@ -27,6 +27,8 @@ class Command(IntEnum):
     CHAN_LIST_RESP = auto()
     LEAVE_CHANNEL = auto()
     LEAVE_CHANNEL_RESP = auto()
+    CHANGE_NICK = auto()
+    CHANGE_NICK_RESP = auto()
     DISCONNECT = auto()
 
 

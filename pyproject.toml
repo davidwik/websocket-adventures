@@ -22,6 +22,7 @@ dev = [
 chatserver = "chat:server.main"
 chatclient = "chat:client.main"
 chatsim = "chat:cltest.main"
+chatui = "chat:tui.main"
 
 [tool.uv]
 package=true

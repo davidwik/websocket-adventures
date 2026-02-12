@@ -4,7 +4,7 @@ from textual.events import Key
 from textual.app import App, ComposeResult
 from textual.widgets import TextArea, Input, ListView, ListItem, Label, Footer
 from textual.containers import Vertical, Horizontal
-from hserver import PackIDX, mk_pack, Command
+from .server import PackIDX, mk_pack, Command
 from urllib.parse import quote
 from time import sleep
 from collections import deque
@@ -28,7 +28,9 @@ class Buffer:
 
     @staticmethod
     def get_dm_buffer(user_id: int) -> deque:
-        return Buffer.dm_buffers.setdefault(user_id, deque(maxlen=Buffer.MAX_MESSAGES))
+        return Buffer.dm_buffers.setdefault(
+            user_id, deque(maxlen=Buffer.MAX_MESSAGES)
+        )
 
 
 class ChatLikeApp(App):
@@ -44,6 +46,7 @@ class ChatLikeApp(App):
         self.chan_list = {}
         self.chan_buf: dict[int, asyncio.Queue] = {}
         self.dm_buf: dict[int, asyncio.Queue] = {}
+        self.write_queue: asyncio.Queue = asyncio.Queue()
 
     def get_chan_buf(self, chan_id: int) -> asyncio.Queue:
         if chan_id not in self.chan_buf:
@@ -76,7 +79,7 @@ class ChatLikeApp(App):
             try:
                 msg = msgpack.unpackb(message, strict_map_key=False)
                 match msg[PackIDX.COMMAND]:
-                    case Command.CHAN_LIST_DATA:
+                    case Command.CHAN_LIST_RESP:
                         _ = asyncio.create_task(
                             self.update_user_list(
                                 msg[PackIDX.CHANNEL], msg[PackIDX.CONTENT]
@@ -90,6 +93,14 @@ class ChatLikeApp(App):
 
             except Exception as e:
                 self.history.insert(f"Something unexpected {e}")
+
+    async def write_data(self, websocket):
+        try:
+            while True:
+                msg = await self.write_queue.get()
+                await websocket.send(msg)
+        except websockets.ConnectionClosed:
+            return
 
     async def update_user_list(self, chan_id: int, new_list: dict[int, str]):
         if chan_id in self.chan_list:
@@ -109,7 +120,10 @@ class ChatLikeApp(App):
         await self.render_user_list(chan_id, add_users, remove_users)
 
     async def render_user_list(
-        self, chan_id: int, add_users: dict[int, str], remove_users: dict[int, str]
+        self,
+        chan_id: int,
+        add_users: dict[int, str],
+        remove_users: dict[int, str],
     ):
         for a in remove_users.keys():
             try:
@@ -132,7 +146,7 @@ class ChatLikeApp(App):
     async def update_stuff(self, websocket):
         while self.active:
             msg = mk_pack(
-                Command.GET_CHAN_LIST,
+                Command.CHAN_LIST,
                 self.snowflake_id,
                 self.nick_name,
                 "",
@@ -153,15 +167,16 @@ class ChatLikeApp(App):
 
     async def print_channel(self, chan_id: int):
         last_len = 0
-        self.history.insert(f"{chan_id}")
-        self.history.insert("JOJO")
+
         while True:
-            await asyncio.sleep(1)
-            self.history.insert("WAITING FOR BUF\n")
+            await asyncio.sleep(0)
+
             buf = self.get_chan_buf(chan_id)
             msg = await buf.get()
-            self.history.insert("BUF DONE\n")
-            self.history.insert(f"{msg}")
+
+            self.history.insert(
+                f"<{msg[PackIDX.NAME]}> {msg[PackIDX.CONTENT]}\n"
+            )
 
     async def start_chat(self):
         async with websockets.connect(
@@ -173,7 +188,9 @@ class ChatLikeApp(App):
                     print(id)
                     return None
             except websockets.ConnectionClosedError:
-                self.history.insert("Failed to connect to server.. maybe busy?\n")
+                self.history.insert(
+                    "Failed to connect to server.. maybe busy?\n"
+                )
                 return None
             except websockets.ConnectionClosed:
                 self.history.insert("What connec??")
@@ -199,7 +216,12 @@ class ChatLikeApp(App):
                 self.history.insert("Failed to get chanid\n")
 
             self.recv_task = asyncio.create_task(self.receive_data(websocket))
-            self.update_stuff_task = asyncio.create_task(self.update_stuff(websocket))
+            self.update_stuff_task = asyncio.create_task(
+                self.update_stuff(websocket)
+            )
+
+            self.send_stuff = asyncio.create_task(self.write_data(websocket))
+
             self.write_task = asyncio.create_task(
                 self.print_channel(self.channel_number)
             )
@@ -270,7 +292,14 @@ class ChatLikeApp(App):
             sys.exit()
         else:
             if text:
-                self.history.insert(f"{text}\n")
+                msg = mk_pack(
+                    Command.WRITE_TO_CHANNEL,
+                    self.snowflake_id,
+                    self.nick_name,
+                    text,
+                    self.channel_number,
+                )
+                self.write_queue.put_nowait(msg)
 
         event.input.value = ""  # Clear input
 
@@ -286,5 +315,9 @@ class ChatLikeApp(App):
         return len(list_view.children)
 
 
-if __name__ == "__main__":
+def main():
     ChatLikeApp().run()
+
+
+if __name__ == "__main__":
+    main()

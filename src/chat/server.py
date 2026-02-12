@@ -102,7 +102,7 @@ class ClientSession:
 
 class ChatServer:
     def __init__(self):
-        self.clients = {}
+        self.clients: dict[int, ClientSession] = {}
         self.channels: dict[int, dict[int, str]] = {
             0: {},
             1: {},
@@ -121,6 +121,7 @@ class ChatServer:
         self.msg_out: int = 0
         self.last_msg_in = 0
         self.last_msg_out = 0
+        self.users: dict[int, str] = {}
         self.total_queued_items = 0
         self._unregistering = set()  # Track clients being unregistered
 
@@ -139,6 +140,7 @@ class ChatServer:
         """
         id = self.sf.next_id()
         session = ClientSession(ws, self)
+        self.users[id] = name
         self.clients[id] = session
         try:
             await session.queue.put(str(id))
@@ -221,6 +223,21 @@ class ChatServer:
             await session.queue.put(new_msg)
         except asyncio.QueueFull:
             await self.unregister(id)
+
+    async def change_nick(self, msg: tuple):
+        id = int(msg[PackIDX.ID])
+        breakpoint()
+
+    async def write_to_user(self, msg: tuple):
+        client_id: int = int(msg[PackIDX.TO_ID])
+        message = mk_pack(*msg)
+        session = self.clients.get(client_id)
+        if not session:
+            return
+        try:
+            session.queue.put_nowait(message)
+        except asyncio.QueueFull:
+            print("QUEE FULL")
 
     async def write_to_channel(self, msg: tuple):
         chan = int(msg[PackIDX.CHANNEL])
@@ -399,15 +416,18 @@ class ChatServer:
                 await self.leave_channel(id, chan_id, name)
             case Command.WELCOME_TO_CHANNEL:
                 await self.write_to_channel(msg)
+            case Command.CHANGE_NICK:
+                await self.change_nick(msg)
             case Command.WRITE_TO_CHANNEL:
                 chan_id = msg[PackIDX.CHANNEL]
                 await self.write_to_channel(msg)
+            case Command.WRITE_TO_USER:
+                await self.write_to_user(msg)
             case Command.LEAVE_CHANNEL_RESP:
                 chan_id = msg[PackIDX.CHANNEL]
                 await self.write_to_channel(msg)
             case Command.CHAN_LIST:
                 await self.send_chan_list(msg)
-
             case _:
                 print(
                     f"Unhandles command: {Command(msg[PackIDX.COMMAND]).name}"
