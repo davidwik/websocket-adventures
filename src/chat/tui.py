@@ -88,7 +88,7 @@ class ChatLikeApp(App):
                     case Command.WRITE_TO_CHANNEL:
                         buf = self.get_chan_buf(msg[PackIDX.CHANNEL])
                         await buf.put(msg)
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0)
                         continue
 
             except Exception as e:
@@ -181,6 +181,8 @@ class ChatLikeApp(App):
     async def start_chat(self):
         async with websockets.connect(
             f"ws://localhost:8765?username={quote(self.nick_name)}",
+            ping_interval=None,
+            ping_timeout=None,
         ) as websocket:
             try:
                 id = await websocket.recv()
